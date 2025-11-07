@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whisper (enkel lokal HTML)</title>
+<style>
+  :root { --bg:#f6f9ff; --card:#ffffff; --fg:#0f172a; --muted:#475569; --primary:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  .wrap{max-width:860px;margin:1.2rem auto;padding:1rem}
+  h1{margin:.2rem 0 1rem 0}
+  .card{background:var(--card);border:1px solid #e2e8f0;border-radius:14px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  .row{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+  .row > * { flex: 1 1 auto }
+  label span{display:block;font-size:.9rem;color:var(--muted)}
+  input[type="password"], input[type="text"], select {width:100%;padding:.6rem .7rem;border:1px solid #cbd5e1;border-radius:10px}
+  textarea{width:100%;min-height:40vh;padding:.8rem;border:1px solid #cbd5e1;border-radius:10px;resize:vertical}
+  button{border:0;border-radius:12px;padding:.7rem 1rem;background:var(--primary);color:#fff;cursor:pointer}
+  button.ghost{background:#0000;border:1px solid #cbd5e1;color:var(--fg)}
+  button.warn{background:#ef4444}
+  .status{margin-top:.5rem;color:var(--muted)}
+  .ok{color:var(--ok)} .bad{color:var(--bad)}
+  .grid{display:grid;gap:.8rem;grid-template-columns:1fr}
+  @media (min-width:720px){ .grid{grid-template-columns:1fr 1fr} }
+  .small{font-size:.9rem;color:var(--muted)}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎧 Whisper – enkel lokal HTML</h1>
+    <p class="small">
+      Denne siden tar opp lyd lokalt og sender den til OpenAI Whisper (<code>whisper-1</code>) for transkripsjon.
+      API-nøkkelen lagres bare i <em>din</em> nettleser (localStorage). Kjør helst over <b>https</b> eller <b>localhost</b> for mikrofontilgang.
+    </p>
+
+    <div class="card" style="margin-bottom:1rem">
+      <div class="grid">
+        <label><span>OpenAI API-nøkkel</span>
+          <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off">
+        </label>
+        <div class="row">
+          <button id="saveKey" class="ghost">💾 Lagre nøkkel i nettleser</button>
+          <button id="clearKey" class="ghost">🧹 Fjern lagret nøkkel</button>
+        </div>
+      </div>
+      <div class="row" style="margin-top:.6rem">
+        <label style="flex:1 1 220px"><span>Språk (valgfritt)</span>
+          <select id="lang">
+            <option value="">Auto</option>
+            <option value="no">Norsk (no)</option>
+            <option value="en">Engelsk (en)</option>
+            <option value="sv">Svensk (sv)</option>
+            <option value="da">Dansk (da)</option>
+            <option value="de">Tysk (de)</option>
+            <option value="es">Spansk (es)</option>
+            <option value="pl">Polsk (pl)</option>
+            <option value="ru">Russisk (ru)</option>
+            <option value="uk">Ukrainsk (uk)</option>
+            <option value="ar">Arabisk (ar)</option>
+            <option value="th">Thai (th)</option>
+          </select>
+        </label>
+        <label style="flex:1 1 220px"><span>Format</span>
+          <select id="fmt">
+            <option value="text">Ren tekst (.txt)</option>
+            <option value="srt">SRT-undertekst (.srt)</option>
+            <option value="verbose_json">JSON (verbose)</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:.6rem">
+        <button id="recBtn">🎙️ Start opptak</button>
+        <button id="sendBtn" class="ghost">⬆️ Send til Whisper</button>
+        <button id="copyBtn" class="ghost">📋 Kopier tekst</button>
+        <button id="saveTxt" class="ghost">💾 Lagre som fil</button>
+        <button id="clearOut" class="warn">🗑️ Tøm tekst</button>
+      </div>
+      <div id="status" class="status"></div>
+    </div>
+
+    <div class="card">
+      <textarea id="out" placeholder="Transkripsjon vises her …"></textarea>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const apiKeyInp = document.getElementById("apiKey");
+  const saveKeyBtn = document.getElementById("saveKey");
+  const clearKeyBtn = document.getElementById("clearKey");
+  const langSel = document.getElementById("lang");
+  const fmtSel = document.getElementById("fmt");
+  const recBtn = document.getElementById("recBtn");
+  const sendBtn = document.getElementById("sendBtn");
+  const copyBtn = document.getElementById("copyBtn");
+  const saveTxtBtn = document.getElementById("saveTxt");
+  const clearOutBtn = document.getElementById("clearOut");
+  const out = document.getElementById("out");
+  const status = document.getElementById("status");
+
+  // last nøkkel fra localStorage
+  apiKeyInp.value = localStorage.getItem("openai_key") || "";
+
+  saveKeyBtn.onclick = () => {
+    localStorage.setItem("openai_key", apiKeyInp.value.trim());
+    status.textContent = "🔑 Nøkkel lagret lokalt i nettleseren.";
+  };
+  clearKeyBtn.onclick = () => {
+    localStorage.removeItem("openai_key");
+    apiKeyInp.value = "";
+    status.textContent = "🔑 Lagret nøkkel fjernet.";
+  };
+
+  // --- Opptak ---
+  let recorder, chunks = [], stream, recording = false;
+
+  async function startRec() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recorder = new MediaRecorder(stream);
+      chunks = [];
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); };
+      recorder.start();
+      recording = true;
+      recBtn.textContent = "⏹️ Stopp opptak";
+      status.textContent = "🔴 Opptak pågår …";
+    } catch (err) {
+      status.innerHTML = "❌ Fikk ikke tilgang til mikrofonen. " + err.message;
+    }
+  }
+
+  function stopRec() {
+    if (!recorder) return;
+    recorder.stop();
+    recording = false;
+    recBtn.textContent = "🎙️ Start opptak";
+    status.textContent = "⏹️ Opptak stoppet – klar til opplasting.";
+  }
+
+  recBtn.onclick = () => recording ? stopRec() : startRec();
+
+  // --- Send til Whisper ---
+  sendBtn.onclick = async () => {
+    const key = apiKeyInp.value.trim() || localStorage.getItem("openai_key");
+    if (!key) {
+      status.textContent = "❌ Legg inn API-nøkkel først.";
+      return;
+    }
+    if (recording) {
+      status.textContent = "⏳ Stopper opptak først …";
+      stopRec();
+      await new Promise(r => setTimeout(r, 150));
+    }
+    if (!chunks.length) {
+      status.textContent = "ℹ️ Ingen opptak å sende. Ta opp først.";
+      return;
+    }
+    const blob = new Blob(chunks, { type: "audio/webm" });
+    const fd = new FormData();
+    fd.append("file", blob, "opptak.webm");
+    fd.append("model", "whisper-1");
+    fd.append("response_format", fmtSel.value);
+    const lang = langSel.value.trim();
+    if (lang) fd.append("language", lang);
+
+    status.textContent = "⬆️ Laster opp til Whisper …";
+    try {
+      const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + key },
+        body: fd
+      });
+      if (!resp.ok) {
+        const errTxt = await resp.text();
+        status.textContent = "❌ Feil fra API: " + resp.status + " — " + errTxt;
+        return;
+      }
+      // svarformat varierer
+      let text;
+      if (fmtSel.value === "text" || fmtSel.value === "srt") {
+        text = await resp.text();
+      } else {
+        const js = await resp.json();
+        text = JSON.stringify(js, null, 2);
+      }
+      out.value = text.trim();
+      status.textContent = "✅ Ferdig!";
+    } catch (err) {
+      status.textContent = "❌ Nettverksfeil: " + err.message;
+    }
+  };
+
+  // --- Kopier / lagre / tøm ---
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(out.value || "").then(() => {
+      status.textContent = "📋 Tekst kopiert.";
+    });
+  };
+
+  saveTxtBtn.onclick = () => {
+    const blob = new Blob([out.value || ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ext = fmtSel.value === "srt" ? "srt" : (fmtSel.value === "verbose_json" ? "json" : "txt");
+    a.href = url; a.download = "whisper_transkripsjon." + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  clearOutBtn.onclick = () => { out.value = ""; status.textContent = "🗑️ Tekstfelt tømt."; };
+
+  // trygt stopp ved tab-skjul
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && recording) stopRec();
+  });
+})();
+</script>
+</body>
+</html>
